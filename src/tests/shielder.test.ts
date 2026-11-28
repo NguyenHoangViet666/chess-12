@@ -1,9 +1,9 @@
 import { describe, expect, it } from 'vitest'
-import { fireReport, isFireThreatened, shielderProtection } from '../engine/fire'
+import { igniteFire, shielderAxis, type FirePreview } from '../engine/fire'
 import { applyAction, legalActions, startPosition } from '../engine/game'
 import { pieceAt, squareName, type Action, type PieceType } from '../engine/model'
 import { attacksSquare } from '../engine/movement'
-import { isInCheck } from '../engine/rules'
+import { dragonPreview, isInCheck } from '../engine/rules'
 import { position, sq, type Entry } from './fixture'
 
 const distantKings = [
@@ -114,87 +114,134 @@ describe('Shielder frontal guard', () => {
   })
 })
 
-describe('Shielder fire interception', () => {
-  it('protects both Shielders and a King on the center line, leaving the other outer cell exposed', () => {
+describe('Shielder fire cancellation', () => {
+  it.each(['white', 'black'] as const)('cancels the entire destination cone at its outer cell for a %s Shielder', color => {
+    const state = startPosition(position([
+      ...distantKings,
+      ['white', 'dragon', 'D4'],
+      ['black', 'pawn', 'F6'],
+      [color, 'shielder', 'G7'],
+    ]))
+    const action = { kind: 'dragon', pieceId: 'white-D4', destination: sq('F5'), fireTiming: 'after' } as const
+    const preview = dragonPreview(state, state.pieces[action.pieceId], action)
+    expect(preview.canceledBy).toEqual([color + '-G7'])
+    expect(preview.cells.find(cell => cell.pieceId === 'black-F6')?.effect).toBe('threatened')
+
+    const next = applyAction(state, action)!
+    expect(pieceAt(next, sq('F5'))?.id).toBe('white-D4')
+    expect(pieceAt(next, sq('G7'))?.id).toBe(color + '-G7')
+    expect(pieceAt(next, sq('F6'))?.id).toBe('black-F6')
+    expect(next.fireState.effects).toEqual([])
+    expect(next.moveHistory.at(-1)?.fire).toEqual({
+      created: [], expired: [], captures: [], canceledBy: [color + '-G7'],
+    })
+    expect(next.currentPlayer).toBe('black')
+  })
+
+  it('recognizes every Shielder in the cone and leaves ordinary pieces unharmed', () => {
+    const state = startPosition(position([
+      ...distantKings,
+      ['white', 'dragon', 'D4'],
+      ['white', 'shielder', 'D5'],
+      ['black', 'shielder', 'E6'],
+      ['black', 'knight', 'D6'],
+    ]))
+    const next = applyAction(state, {
+      kind: 'dragon', pieceId: 'white-D4', destination: sq('F3'), fireTiming: 'before',
+    })!
+    expect(next.moveHistory.at(-1)?.fire.canceledBy).toEqual(['white-D5', 'black-E6'])
+    expect(next.fireState.effects).toEqual([])
+    expect(next.graveyard).toEqual({ white: [], black: [] })
+    expect(pieceAt(next, sq('D6'))?.id).toBe('black-D6')
+    expect(pieceAt(next, sq('F3'))?.id).toBe('white-D4')
+  })
+
+  it('lets the Dragon capture the canceling Shielder as its subsequent Knight move', () => {
+    const state = startPosition(position([
+      ...distantKings,
+      ['white', 'dragon', 'D4'],
+      ['black', 'shielder', 'C6'],
+      ['black', 'pawn', 'D5'],
+    ]))
+    const next = applyAction(state, {
+      kind: 'dragon', pieceId: 'white-D4', destination: sq('C6'), fireTiming: 'before',
+    })!
+    expect(next.graveyard.black).toEqual(['black-C6'])
+    expect(next.moveHistory.at(-1)?.fire).toMatchObject({
+      created: [], captures: [], canceledBy: ['black-C6'],
+    })
+    expect(pieceAt(next, sq('D5'))?.id).toBe('black-D5')
+  })
+
+  it('retains already-burning squares entered by a Shielder and never burns it', () => {
+    const raw = position([
+      ...distantKings,
+      ['black', 'shielder', 'C7'],
+    ], 'black')
+    const preview: FirePreview = {
+      cells: [{ square: sq('C6'), pieceId: null, effect: 'empty', refresh: false }], canceledBy: [],
+    }
+    raw.fireState = igniteFire(raw.fireState, 'white', preview).fireState
+    const active = applyAction(startPosition(raw), move('black-C7', 'C6'))!
+    expect(active.fireState.effects).toEqual(raw.fireState.effects)
+    expect(active.moveHistory.at(-1)?.fire.expired).toEqual([])
+    expect(pieceAt(active, sq('C6'))?.id).toBe('black-C7')
+
+    const resolved = applyAction(active, move('white-A1', 'A2'))!
+    expect(resolved.fireState.effects).toEqual([])
+    expect(resolved.moveHistory.at(-1)?.fire.expired).toEqual(raw.fireState.effects)
+    expect(resolved.moveHistory.at(-1)?.fire.captures).toEqual([])
+    expect(pieceAt(resolved, sq('C6'))?.id).toBe('black-C7')
+  })
+
+  it('cancels only new fire even when existing fire burns another piece in the same turn', () => {
+    const raw = position([
+      ...distantKings,
+      ['white', 'dragon', 'D4'],
+      ['black', 'shielder', 'C6'],
+      ['black', 'pawn', 'D5'],
+    ])
+    const preview: FirePreview = {
+      cells: [{ square: sq('D5'), pieceId: 'black-D5', effect: 'threatened', refresh: false }], canceledBy: [],
+    }
+    raw.fireState = { ...igniteFire(raw.fireState, 'white', preview).fireState, currentTurnIndex: 1 }
+    const next = applyAction(startPosition(raw), {
+      kind: 'dragon', pieceId: 'white-D4', destination: sq('F3'), fireTiming: 'before',
+    })!
+    expect(next.moveHistory.at(-1)?.fire).toEqual({
+      created: [], expired: raw.fireState.effects,
+      captures: [{ pieceId: 'black-D5', owner: 'white', square: sq('D5') }], canceledBy: ['black-C6'],
+    })
+    expect(next.graveyard.black).toEqual(['black-D5'])
+  })
+
+  it('prevents a fire check when a Shielder cancels the cone away from the King', () => {
     const state = startPosition(position([
       ['white', 'king', 'A1'],
       ['white', 'dragon', 'D4'],
-      ['black', 'shielder', 'D5'],
-      ['black', 'shielder', 'C6'],
       ['black', 'king', 'D6'],
-      ['black', 'pawn', 'E6'],
-    ]))
-    const dragon = state.pieces['white-D4']
-    const preview = fireReport(state, dragon)
-    expect(Object.fromEntries(preview.map(cell => [squareName(cell.square), cell.effect])))
-      .toEqual({ D5: 'protected', C6: 'protected', D6: 'protected-king', E6: 'victim' })
-    expect(isFireThreatened(state, dragon, sq('D6'))).toBe(false)
-    expect(isFireThreatened(state, dragon, sq('E6'))).toBe(true)
-    expect(isInCheck(state, 'black')).toBe(false)
-
-    const next = applyAction(state, {
-      kind: 'dragon', pieceId: dragon.id, destination: sq('F3'), fireTiming: 'before',
-    })!
-    expect(next.graveyard.black).toEqual(['black-E6'])
-    expect(pieceAt(next, sq('D5'))?.id).toBe('black-D5')
-    expect(pieceAt(next, sq('C6'))?.id).toBe('black-C6')
-    expect(pieceAt(next, sq('D6'))?.id).toBe('black-D6')
-  })
-
-  it('protects non-King allies directly behind the Shielder as well', () => {
-    const state = startPosition(position([
-      ...distantKings,
-      ['white', 'dragon', 'D4'],
-      ['black', 'shielder', 'D5'],
-      ['black', 'bishop', 'D6'],
-      ['black', 'knight', 'C6'],
+      ['black', 'shielder', 'C6'],
     ]))
     const next = applyAction(state, {
       kind: 'dragon', pieceId: 'white-D4', destination: sq('F3'), fireTiming: 'before',
     })!
-    expect(next.graveyard.black).toEqual(['black-C6'])
-    expect(pieceAt(next, sq('D6'))?.id).toBe('black-D6')
+    expect(isInCheck(next, 'black')).toBe(false)
+    expect(next.moveHistory.at(-1)?.fire.canceledBy).toEqual(['black-C6'])
   })
+})
 
-  it('does not shield an enemy behind a Shielder allied with the firing Dragon', () => {
-    const state = startPosition(position([
-      ...distantKings,
-      ['white', 'dragon', 'D4'],
-      ['white', 'shielder', 'D5'],
-      ['black', 'bishop', 'D6'],
-    ]))
-    const next = applyAction(state, {
-      kind: 'dragon', pieceId: 'white-D4', destination: sq('F3'), fireTiming: 'before',
-    })!
-    expect(next.graveyard.black).toEqual(['black-D6'])
-    expect(pieceAt(next, sq('D5'))?.id).toBe('white-D5')
-  })
-
-  it('rejects moving a shield away from its King and permits capturing the threatening Dragon', () => {
+describe('Shielder and King safety', () => {
+  it('shows only the precise forward axis and cannot expose its King to a sliding piece', () => {
     const state = startPosition(position([
       ['white', 'king', 'D4'],
       ['white', 'shielder', 'D5'],
-      ['black', 'dragon', 'D6'],
+      ['black', 'rook', 'D9'],
       ['black', 'king', 'L12'],
     ]))
+    expect(shielderAxis(state.pieces['white-D5']).map(squareName))
+      .toEqual(['D6', 'D7', 'D8', 'D9', 'D10', 'D11', 'D12'])
     expect(isInCheck(state, 'white')).toBe(false)
-    const protection = shielderProtection(state, state.pieces['white-D5'])
-    expect(protection.axis.map(squareName)).toEqual(['D6', 'D7', 'D8', 'D9', 'D10', 'D11', 'D12'])
-    expect(protection.protectedLine.map(squareName)).toEqual(['D5', 'D4'])
     expect(applyAction(state, move('white-D5', 'C5'))).toBeNull()
-    expect(applyAction(state, move('white-D5', 'D6'))?.graveyard.black).toEqual(['black-D6'])
-  })
-
-  it('lets a Shielder intercept existing fire check by moving into the central line', () => {
-    const state = startPosition(position([
-      ['white', 'king', 'D4'],
-      ['white', 'shielder', 'C5'],
-      ['black', 'dragon', 'D6'],
-      ['black', 'king', 'L12'],
-    ]))
-    expect(isInCheck(state, 'white')).toBe(true)
-    expect(shielderProtection(state, state.pieces['white-C5']).protectedLine).toEqual([])
-    const next = applyAction(state, move('white-C5', 'D5'))!
-    expect(isInCheck(next, 'white')).toBe(false)
+    expect(applyAction(state, move('white-D5', 'D6'))).not.toBeNull()
   })
 })

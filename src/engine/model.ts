@@ -18,6 +18,42 @@ export interface Square {
   rank: number;
 }
 
+export const RULESET_VERSION = '0.4';
+export const RESURRECTION_LIMIT = {
+  queen: 1, rook: 1, bishop: 1, knight: 1, necromancer: 1, dragon: 1, shielder: 1, pawn: 3,
+} as const satisfies Record<Exclude<PieceType, "king">, number>;
+export type ResurrectableType = keyof typeof RESURRECTION_LIMIT;
+export const RESURRECTION_TYPES = Object.keys(RESURRECTION_LIMIT) as ResurrectableType[];
+export type ResurrectionQuota = Record<ResurrectableType, number>;
+
+export interface FireEffect {
+  id: string;
+  owner: Color;
+  square: Square;
+  createdAtTurn: number;
+  expiresAfterTurn: number;
+}
+
+export interface FireState {
+  effects: FireEffect[];
+  /** Index of the next complete action. */
+  currentTurnIndex: number;
+}
+
+export interface FireCapture {
+  pieceId: string;
+  owner: Color;
+  square: Square;
+}
+
+export interface TurnFire {
+  created: FireEffect[];
+  expired: FireEffect[];
+  captures: FireCapture[];
+  canceledBy: string[];
+}
+
+
 export interface Piece {
   id: string;
   color: Color;
@@ -80,6 +116,7 @@ export interface TurnRecord {
   from: Square | null;
   to: Square;
   capturedIds: string[];
+  fire: TurnFire;
   description: string;
 }
 
@@ -88,6 +125,8 @@ export interface GameState {
   pieces: Record<string, Piece>;
   graveyard: Record<Color, string[]>;
   currentPlayer: Color;
+  resurrectionState: Record<Color, ResurrectionQuota>;
+  fireState: FireState;
   castlingRights: Record<Color, Record<CastleSide, boolean>>;
   enPassant: { target: Square; pawnId: string } | null;
   halfMoveClock: number;
@@ -144,6 +183,15 @@ export function pieceAt(state: Pick<GameState, "board" | "pieces">, square: Squa
   return id === null ? undefined : state.pieces[id];
 }
 
+export function remainingResurrections(state: GameState, color: Color, type: PieceType): number {
+  return type === "king" ? 0 : RESURRECTION_LIMIT[type] - state.resurrectionState[color][type];
+}
+
+function unusedQuotas(): ResurrectionQuota {
+  return { queen: 0, rook: 0, bishop: 0, knight: 0, necromancer: 0, dragon: 0, shielder: 0, pawn: 0 };
+}
+
+
 export function createPosition(): GameState {
   const board = Array.from({ length: BOARD_SIZE }, () => Array<string | null>(BOARD_SIZE).fill(null));
   const pieces: Record<string, Piece> = {};
@@ -180,6 +228,8 @@ export function createPosition(): GameState {
     pieces,
     graveyard: { white: [], black: [] },
     currentPlayer: "white",
+    resurrectionState: { white: unusedQuotas(), black: unusedQuotas() },
+    fireState: { effects: [], currentTurnIndex: 0 },
     castlingRights: {
       white: { kingSide: true, queenSide: true },
       black: { kingSide: true, queenSide: true },

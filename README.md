@@ -1,6 +1,6 @@
 # 12×12 Chess
 
-A chess variant for two people at one screen or one player against a local bot. The starting board has 144 squares and 26 pieces per side. White moves first.
+Ruleset **0.4** is a chess variant for two people at one screen, one player against a local bot, or two bots in self-play. The board has 144 squares and 26 starting pieces per side. White moves first.
 
 ## Run locally
 
@@ -11,33 +11,43 @@ npm.cmd ci
 npm.cmd run dev -- --open
 ```
 
-You can skip the install step if the dependencies are already installed. Open **How to play** in the game for a quick rules guide. Select one of the current player's pieces, then choose a highlighted destination. On the keyboard, press Tab to enter the board, use the arrow keys to navigate, then press Enter or Space to select or move.
+Skip installation if the dependencies are already installed. Select a piece, then choose a highlighted destination. On the keyboard, press Tab to enter the board, use the arrow keys to navigate, then press Enter or Space. **How to play** explains the rules.
 
-- **Dragon:** Choose Move only, Fire first, or Fire after. For Fire after, select the destination to preview the result, then select it again or press **Play move + fire**.
-- **Necromancer:** Select a living Necromancer and choose an eligible ally from the resurrection list. The move uses the whole turn.
-- **Shielder:** The dashed file marks its frontal guard. Solid teal highlights show protection against a currently positioned enemy Dragon.
+- **Dragon:** Choose Fire first or Fire after, select a landing square, and confirm the preview. The fire starts with two turns on the activation turn and has one turn left during the answer. It destroys vulnerable enemy pieces still on the zone after the answer. A landed piece at risk is marked before the action is played.
+- **Shielder:** Any Shielder inside the preview cancels the whole new breath, regardless of color. Existing fire persists, and Shielders are immune. The dashed file shows the separate frontal guard.
+- **Necromancer:** Each side may revive three Pawns and one piece of every other non-King original type. Revived pieces go back to their own empty starting square. A promoted Pawn consumes the Pawn allowance and returns as a Pawn.
 
-Matches are held in memory for the current tab. Refreshing the page starts a fresh match. Undo covers complete turns and draw decisions.
+Ordinary actions are checked after fire expires. A King may finish a legal answer on a square whose hostile fire has expired. Castling also checks the active hazards on the King’s start, crossing and destination squares. Inactive Dragon cones never give check.
+
+Matches are in memory for the current tab. Refreshing starts a fresh match. Undo restores complete turns, including fire timers and resurrection allowances.
 
 ## Play against the bot
 
-Choose **Play White vs bot** or **Play Black vs bot** in **Match mode**. The bot searches in a background worker for about 1.5 seconds per turn. **Completed depth** counts individual turns (plies). **Predicted reply** is the opponent's next move on the bot's best line when the search found one. In this mode **Undo** returns to your last decision, even if the bot has already replied.
+Choose **Play White vs bot** or **Play Black vs bot** in **Match mode**. The bot runs in a Web Worker and defaults to 1.5 seconds per turn, adjustable from 1 to 2 seconds. The analysis panel shows depth, nodes, time, score, the best completed move and its actual predicted line. Depth counts individual turns. **Undo** returns to your last decision in this mode.
 
-The bot uses iterative deepening with alpha-beta pruning, orders tactical actions and reuses transposition entries. A bounded quiescence search extends captures, promotions, resurrections and responses to check. At the deadline it keeps the last completed search or a legal fallback. Its evaluation accounts for Dragon fire, Shielder interception, legal resurrection potential, piece placement and king safety. It uses the same legal turn generator and draw rules as the game.
+The bot uses the same legal turn generator as the game. It searches with iterative deepening, alpha-beta pruning, move ordering, a transposition table and a bounded tactical search. Its evaluation tracks remaining revival allowances, active fire, escape options, piece placement and King safety. The execution interface can be replaced without changing the game rules or search.
 
+## Watch self-play and measure balance
+
+Choose **Bot vs bot** to watch a match. **Pause** stops the current search and **Resume** continues it. **Undo** rewinds one turn and leaves playback paused. Statistics credit delayed burns to the color that created the effect.
+
+Run batches without the browser:
+
+```powershell
+npm.cmd run selfplay -- --games 8 --max-plies 160 --opening-plies 4 --nodes 1000 --seed 12012 --workers 4 --history --output selfplay-results/rules-0.4-seed-12012.json
+```
+
+Both colors use the same engine and deterministic search limits. The seed makes the quiet opening moves reproducible. The match cap includes those moves, while ability telemetry starts after them. The JSON includes the ruleset version, real and capped outcomes, search depth, fallbacks, fire activations, cancellations, expiration captures and resurrections. `--history` adds turn records. Run `npm.cmd run selfplay -- --help` for all options.
+
+Games stopped at the move limit are counted separately from rule-based draws. Depth zero indicates a legal fallback. Compare reports from the same ruleset and settings when judging strength. The earlier `baseline-seed-12012.json` uses the previous rules.
 
 ## Project structure
 
-- `src/engine/model.ts` defines board coordinates, identities, action types and the initial position.
-- `src/engine/movement.ts` defines standard and special moves, en passant and direct attacks.
-- `src/engine/fire.ts` calculates fire, interception and the same previews used by the UI.
-- `src/engine/rules.ts` simulates complete actions and handles castling, King safety and repetition identity.
-- `src/engine/game.ts` exposes validated turns, game status, draw actions and undo snapshots.
-- `src/bot/` contains variant evaluation, timed search and the worker.
-- `src/App.tsx`, `src/components/` and `src/styles.css` render and control the responsive interface. Assets are local vector artwork.
-- `src/tests/` contains engine tests for movement, special pieces, King safety, draw conditions and undo.
-
-Claimable draws are exposed once the current position or move counter reaches the specified threshold. Castling checks the starting, transit and final King squares, including Dragon fire. Conventional attack geometry still applies when an attacking piece is pinned.
+- `src/engine/` defines board state, identities, movement, fire effects, legal actions, repetition and undo.
+- `src/bot/` contains the evaluator, search and local worker.
+- `src/App.tsx`, `src/components/` and `src/styles.css` implement the interface.
+- `src/selfPlay/` and `scripts/self-play.mjs` implement batch matches and telemetry.
+- `src/tests/` contains engine, bot and self-play regression tests.
 
 ## Verify or build
 

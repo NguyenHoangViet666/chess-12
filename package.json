@@ -11,7 +11,8 @@
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "build": "npm run typecheck && vite build",
-    "preview": "vite preview"
+    "preview": "vite preview",
+    "selfplay": "node scripts/self-play.mjs"
   },
   "dependencies": {
     "react": "19.3.1",

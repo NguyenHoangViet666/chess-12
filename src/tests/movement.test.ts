@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { applyAction, createGame, legalActions, startPosition } from "../engine/game";
 import { attacksSquare, moveDestinations } from "../engine/movement";
-import { COLORS, forward, pieceAt, squareName } from "../engine/model";
+import { COLORS, RESURRECTION_TYPES, forward, pieceAt, remainingResurrections, squareName } from "../engine/model";
 import type { Action, GameState, MoveAction } from "../engine/model";
 import { isInCheck } from "../engine/rules";
 import { position, sq } from "./fixture";
@@ -48,6 +48,11 @@ describe("initial 12×12 formation", () => {
       expect(pieceAt(state, sq("G" + shield))).toMatchObject({ type: "shielder", color });
       expect(state.castlingRights[color]).toEqual({ kingSide: true, queenSide: true });
       expect(state.graveyard[color]).toEqual([]);
+      for (const type of RESURRECTION_TYPES) {
+        expect(state.resurrectionState[color][type]).toBe(0);
+        expect(remainingResurrections(state, color, type)).toBe(type === "pawn" ? 3 : 1);
+      }
+      expect(remainingResurrections(state, color, "king")).toBe(0);
     }
     for (const piece of Object.values(state.pieces)) {
       expect(piece.currentSquare).toEqual(piece.spawnSquare);
@@ -57,6 +62,7 @@ describe("initial 12×12 formation", () => {
     expect(state.currentPlayer).toBe("white");
     expect(state.repetitionHistory).toHaveLength(1);
     expect(state.enPassant).toBeNull();
+    expect(state.fireState.effects).toEqual([]);
     expect(state.status).toEqual({ kind: "active", inCheck: false, claimable: [] });
     expect(names(state, "white-A3")).toEqual(["A4", "A5"]);
     expect(names(state, "black-A10")).toEqual(["A9", "A8"]);
@@ -237,10 +243,36 @@ describe("castling", () => {
       const state = ready([["black", "rook", attacker]]);
       expect(applyAction(state, { kind: "castle", side: "kingSide" })).toBeNull();
     }
-    const fire = ready([["black", "dragon", "H2"]]);
-    expect(isInCheck(fire, "white")).toBe(false);
-    expect(applyAction(fire, { kind: "castle", side: "kingSide" })).toBeNull();
-    expect(attacksSquare(fire, fire.pieces["black-H2"], sq("H1"))).toBe(false);
+  });
+
+  it("allows an inactive cone but forbids castling through a zone that is burning at the start of the turn", () => {
+    const inactive = ready([["black", "dragon", "H2"]]);
+    expect(isInCheck(inactive, "white")).toBe(false);
+    expect(attacksSquare(inactive, inactive.pieces["black-H2"], sq("H1"))).toBe(false);
+    expect(applyAction(inactive, { kind: "castle", side: "kingSide" })).not.toBeNull();
+
+    const burning = play({ ...inactive, currentPlayer: "black" }, {
+      kind: "dragon", pieceId: "black-H2", destination: sq("I4"), fireTiming: "before",
+    });
+    expect(burning.fireState.effects.map((effect) => squareName(effect.square))).toEqual(["H1"]);
+    expect(isInCheck(burning, "white")).toBe(false);
+    expect(applyAction(burning, { kind: "castle", side: "kingSide" })).toBeNull();
+
+    const normalKingMove = play(burning, movement("white-G1", "H1"));
+    expect(pieceAt(normalKingMove, sq("H1"))?.id).toBe("white-G1");
+    expect(normalKingMove.fireState.effects).toHaveLength(0);
+  });
+
+  it("forbids castling when the King starts on or would land on active hostile fire", () => {
+    for (const [square, startsInCheck] of [["G1", true], ["I1", false]] as const) {
+      const state = ready();
+      state.fireState = {
+        currentTurnIndex: 5,
+        effects: [{ id: "test-burning-" + square, owner: "black", square: sq(square), createdAtTurn: 4, expiresAfterTurn: 5 }],
+      };
+      expect(isInCheck(state, "white")).toBe(startsInCheck);
+      expect(applyAction(state, { kind: "castle", side: "kingSide" })).toBeNull();
+    }
   });
 
   it("permanently loses rights when a Rook moves or the King moves", () => {

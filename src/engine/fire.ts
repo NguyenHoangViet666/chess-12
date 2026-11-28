@@ -1,9 +1,18 @@
-import { forward, inBounds, pieceAt, sameSquare, type Color, type GameState, type Piece, type Square } from './model'
+import {
+  forward, inBounds, pieceAt, sameSquare,
+  type Color, type FireCapture, type FireEffect, type FireState, type GameState, type Piece, type Square,
+} from './model'
 
 export interface FireCell {
   square: Square
-  effect: 'empty' | 'ally' | 'victim' | 'protected' | 'king' | 'protected-king'
   pieceId: string | null
+  effect: 'empty' | 'ally' | 'threatened' | 'king' | 'shielder'
+  refresh: boolean
+}
+
+export interface FirePreview {
+  cells: FireCell[]
+  canceledBy: string[]
 }
 
 export function fireCone(origin: Square, color: Color): Square[] {
@@ -16,74 +25,108 @@ export function fireCone(origin: Square, color: Color): Square[] {
   ].filter(inBounds)
 }
 
-function interceptingShielder(state: GameState, dragon: Piece, square: Square): Piece | null {
-  const origin = dragon.currentSquare
-  if (!origin || square.file !== origin.file) return null
-
-  const direction = forward(dragon.color)
-  if (square.rank !== origin.rank + 2 * direction) return null
-
-  const shield = pieceAt(state, { file: origin.file, rank: origin.rank + direction })
-  return shield?.type === 'shielder' && shield.color !== dragon.color ? shield : null
+export function turnsRemaining(effect: FireEffect, turnIndex: number): number {
+  if (turnIndex < effect.createdAtTurn) return 0
+  return Math.max(0, effect.expiresAfterTurn - turnIndex + 1)
 }
 
-export function fireReport(state: GameState, dragon: Piece): FireCell[] {
-  if (!dragon.currentSquare) return []
+export function isBurnable(piece: Piece, owner: Color): boolean {
+  return piece.color !== owner && piece.type !== 'king' && piece.type !== 'shielder'
+}
 
-  return fireCone(dragon.currentSquare, dragon.color).map(square => {
-    const target = pieceAt(state, square)
-    const pieceId = target?.id ?? null
-    if (!target) return { square, effect: 'empty', pieceId }
-    if (target.color === dragon.color) return { square, effect: 'ally', pieceId }
+export function isHostileFire(state: GameState, square: Square, color: Color): boolean {
+  const { currentTurnIndex, effects } = state.fireState
+  return effects.some(effect =>
+    effect.owner !== color &&
+    turnsRemaining(effect, currentTurnIndex) > 0 &&
+    sameSquare(effect.square, square),
+  )
+}
 
-    const shielded = target.type === 'shielder' || interceptingShielder(state, dragon, square) !== null
-    if (target.type === 'king') return { square, effect: shielded ? 'protected-king' : 'king', pieceId }
-    return { square, effect: shielded ? 'protected' : 'victim', pieceId }
+export function firePreview(state: GameState, dragon: Piece): FirePreview {
+  if (!dragon.currentSquare) return { cells: [], canceledBy: [] }
+
+  const targets = fireCone(dragon.currentSquare, dragon.color).map(square => ({ square, piece: pieceAt(state, square) }))
+  const canceledBy = targets.flatMap(({ piece }) => piece?.type === 'shielder' ? [piece.id] : [])
+  const { currentTurnIndex, effects } = state.fireState
+  const cells = targets.map(({ square, piece }): FireCell => {
+    let effect: FireCell['effect'] = 'empty'
+    if (piece?.type === 'shielder') effect = 'shielder'
+    else if (piece?.color === dragon.color) effect = 'ally'
+    else if (piece?.type === 'king') effect = 'king'
+    else if (piece) effect = 'threatened'
+
+    const refresh = canceledBy.length === 0 && effects.some(active =>
+      active.owner === dragon.color &&
+      turnsRemaining(active, currentTurnIndex) > 0 &&
+      sameSquare(active.square, square),
+    )
+    return { square, pieceId: piece?.id ?? null, effect, refresh }
   })
+  return { cells, canceledBy }
 }
 
-export function fireVictims(state: GameState, dragon: Piece): Piece[] {
-  return fireReport(state, dragon).flatMap(cell => {
-    if (cell.effect !== 'victim' || cell.pieceId === null) return []
-    const victim = state.pieces[cell.pieceId]
-    return victim ? [victim] : []
-  })
+export function igniteFire(
+  fireState: FireState, owner: Color, preview: FirePreview,
+): { fireState: FireState; created: FireEffect[] } {
+  if (preview.canceledBy.length || !preview.cells.length) return { fireState, created: [] }
+
+  const { currentTurnIndex } = fireState
+  const effects = [...fireState.effects]
+  const created: FireEffect[] = []
+  const expiresAfterTurn = currentTurnIndex + 1
+  for (const { square } of preview.cells) {
+    const index = effects.findIndex(effect =>
+      effect.owner === owner && turnsRemaining(effect, currentTurnIndex) > 0 && sameSquare(effect.square, square),
+    )
+    if (index >= 0) {
+      const refreshed = { ...effects[index], expiresAfterTurn }
+      effects[index] = refreshed
+      created.push(refreshed)
+    } else {
+      const effect = {
+        id: [owner, square.file, square.rank, currentTurnIndex].join(':'),
+        owner, square, createdAtTurn: currentTurnIndex, expiresAfterTurn,
+      }
+      effects.push(effect)
+      created.push(effect)
+    }
+  }
+  return { fireState: { currentTurnIndex, effects }, created }
 }
 
-export function isFireThreatened(state: GameState, dragon: Piece, square: Square): boolean {
-  const origin = dragon.currentSquare
-  if (!origin || !inBounds(square)) return false
+export function expireFire(
+  state: GameState,
+): { fireState: FireState; expired: FireEffect[]; captures: FireCapture[] } {
+  const { currentTurnIndex, effects } = state.fireState
+  const remaining: FireEffect[] = []
+  const expired: FireEffect[] = []
+  const captures: FireCapture[] = []
 
-  const distance = (square.rank - origin.rank) * forward(dragon.color)
-  const fileOffset = Math.abs(square.file - origin.file)
-  const insideCone = (distance === 1 && fileOffset === 0) || (distance === 2 && fileOffset <= 1)
-  return insideCone && interceptingShielder(state, dragon, square) === null
+  for (const effect of effects) {
+    if (effect.expiresAfterTurn > currentTurnIndex) {
+      remaining.push(effect)
+      continue
+    }
+    expired.push(effect)
+    if (effect.expiresAfterTurn !== currentTurnIndex || turnsRemaining(effect, currentTurnIndex) === 0) continue
+    const piece = pieceAt(state, effect.square)
+    if (piece && isBurnable(piece, effect.owner) && !captures.some(capture => capture.pieceId === piece.id)) {
+      captures.push({ pieceId: piece.id, owner: effect.owner, square: effect.square })
+    }
+  }
+
+  return { fireState: { currentTurnIndex: currentTurnIndex + 1, effects: remaining }, expired, captures }
 }
 
-export function shielderProtection(state: GameState, shielder: Piece): {
-  axis: Square[]
-  protectedLine: Square[]
-} {
+export function shielderAxis(shielder: Piece): Square[] {
   const origin = shielder.currentSquare
-  if (!origin) return { axis: [], protectedLine: [] }
+  if (!origin) return []
 
   const direction = forward(shielder.color)
   const axis: Square[] = []
   for (let rank = origin.rank + direction; inBounds({ file: origin.file, rank }); rank += direction) {
     axis.push({ file: origin.file, rank })
   }
-
-  const protectedLine: Square[] = []
-  for (const dragon of Object.values(state.pieces)) {
-    if (dragon.type !== 'dragon' || dragon.color === shielder.color || !dragon.currentSquare) continue
-
-    for (const square of fireCone(dragon.currentSquare, dragon.color)) {
-      const shieldProtects = sameSquare(square, origin) || interceptingShielder(state, dragon, square)?.id === shielder.id
-      if (shieldProtects && !protectedLine.some(protectedSquare => sameSquare(protectedSquare, square))) {
-        protectedLine.push(square)
-      }
-    }
-  }
-
-  return { axis, protectedLine }
+  return axis
 }

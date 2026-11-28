@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { applyAction, createSession, legalActions, startPosition, undo, updateSession } from "../engine/game";
-import { pieceAt, squareName } from "../engine/model";
+import { pieceAt, remainingResurrections, squareName } from "../engine/model";
 import type { Action, GameState, MoveAction, ResurrectionAction } from "../engine/model";
 import { moveDestinations } from "../engine/movement";
 import { isInCheck } from "../engine/rules";
@@ -52,7 +52,10 @@ describe("Necromancer and resurrection", () => {
     expect(applyAction(next, resurrect("white-I1"))).toBeNull();
     expect(applyAction(next, move("white-L3", "L4"))).toBeNull();
     expect(state.graveyard.white).toEqual(["white-L3", "white-I1"]);
-    expect(undo(updateSession(createSession(state), next)).game).toEqual(state);
+    expect(remainingResurrections(next, "white", "pawn")).toBe(2);
+    const undone = undo(updateSession(createSession(state), next)).game;
+    expect(undone).toEqual(state);
+    expect(remainingResurrections(undone, "white", "pawn")).toBe(3);
 
     const nextWhiteTurn = play(next, move("black-L12", "K12"));
     expect(play(nextWhiteTurn, move("white-L3", "L5")).enPassant?.pawnId).toBe("white-L3");
@@ -67,6 +70,8 @@ describe("Necromancer and resurrection", () => {
     expect(applyAction(state, resurrect("white-E3"))).toBeNull();
     expect(applyAction(state, resurrect("black-F10"))).toBeNull();
     expect(applyAction(state, resurrect("white-G1"))).toBeNull();
+    expect(remainingResurrections(state, "white", "pawn")).toBe(3);
+    expect(state.moveHistory).toHaveLength(0);
   });
 
   it("lets either living Necromancer revive the other and fails when both are captured", () => {
@@ -83,27 +88,64 @@ describe("Necromancer and resurrection", () => {
     expect(applyAction(state, resurrect("white-J1"))).toBeNull();
   });
 
-  it("permits successive recapture and revival cycles of the same identity", () => {
-    let state = startPosition(position([...KINGS, NECRO, ["white", "pawn", null, "E3"], ["black", "rook", "E8"]]));
-    for (const destination of ["C2", "C1", "C2"]) {
+  it("permits three revivals across recaptures but refuses the fourth even for another Pawn", () => {
+    let state = startPosition(position([...KINGS, NECRO, ["white", "pawn", null, "E3"],
+      ["white", "pawn", null, "F3"], ["black", "rook", "E8"],
+    ]));
+    for (const [used, destination] of ["C2", "C1", "C2"].entries()) {
       state = play(state, resurrect("white-E3"));
       expect(pieceAt(state, sq("E3"))?.id).toBe("white-E3");
+      expect(remainingResurrections(state, "white", "pawn")).toBe(2 - used);
       state = play(state, move("black-E8", "E3"));
-      expect(state.graveyard.white).toEqual(["white-E3"]);
       state = play(state, move("white-C1", destination));
       state = play(state, move("black-E8", "E8"));
     }
+    expect(state.graveyard.white).toEqual(["white-F3", "white-E3"]);
+    expect(applyAction(state, resurrect("white-E3"))).toBeNull();
+    expect(applyAction(state, resurrect("white-F3"))).toBeNull();
     expect(state.moveHistory.filter((turn) => turn.action.kind === "resurrect")).toHaveLength(3);
+    expect(remainingResurrections(state, "black", "pawn")).toBe(3);
+  });
+
+  it("shares a one-use quota across identities and actors, but not across players", () => {
+    const start = position([...KINGS, NECRO, ["white", "necromancer", "J1"], ["black", "necromancer", "J12"],
+      ["white", "queen", null, "F1"], ["black", "queen", null, "F12"],
+      ["white", "dragon", null, "D1"], ["white", "dragon", null, "I1"], ["black", "rook", "F5"],
+    ]);
+    const whiteQueen = play(start, resurrect("white-F1"));
+    expect(remainingResurrections(whiteQueen, "white", "queen")).toBe(0);
+    expect(remainingResurrections(whiteQueen, "black", "queen")).toBe(1);
+    const blackQueen = play(whiteQueen, resurrect("black-F12", "black-J12"));
+    expect(remainingResurrections(blackQueen, "black", "queen")).toBe(0);
+    const firstDragon = play(blackQueen, resurrect("white-D1"));
+    expect(remainingResurrections(firstDragon, "white", "dragon")).toBe(0);
+    const recaptured = play(firstDragon, move("black-F5", "F1"));
+    expect(applyAction(recaptured, resurrect("white-I1", "white-J1"))).toBeNull();
+    const waited = play(recaptured, move("white-C1", "C2"));
+    const vacated = play(waited, move("black-F5", "F5"));
+    expect(pieceAt(vacated, sq("F1"))).toBeUndefined();
+    expect(applyAction(vacated, resurrect("white-F1", "white-J1"))).toBeNull();
   });
 
   it("restores a captured promoted unit to a Pawn that has already moved", () => {
     const state = position([...KINGS, NECRO, ["white", "pawn", "F11", "F3", { hasMoved: true }],
       ["black", "rook", "G12"],
     ]);
+    state.resurrectionState.white.pawn = 2;
+    state.resurrectionState.white.bishop = 1;
     const promotion = play(state, move("white-F3", "F12", "bishop"));
     const capture = play(promotion, move("black-G12", "F12"));
     expect(capture.pieces["white-F3"]).toMatchObject({ type: "bishop", promoted: true, currentSquare: null });
+    const exhaustedPawnQuota = {
+      ...capture,
+      resurrectionState: {
+        ...capture.resurrectionState,
+        white: { ...capture.resurrectionState.white, pawn: 3, bishop: 0 },
+      },
+    };
+    expect(applyAction(exhaustedPawnQuota, resurrect("white-F3"))).toBeNull();
     const revived = play(capture, resurrect("white-F3"));
+    expect(revived.resurrectionState.white).toMatchObject({ pawn: 3, bishop: 1 });
     expect(pieceAt(revived, sq("F3"))).toMatchObject({
       id: "white-F3", baseType: "pawn", type: "pawn", promoted: false, hasMoved: true,
     });
@@ -141,12 +183,32 @@ describe("Necromancer and resurrection", () => {
     expect(isInCheck(rescued, "white")).toBe(false);
   });
 
-  it("can resurrect a Shielder into the same file to intercept a checking Dragon", () => {
-    const state = startPosition(position([
-      ["white", "king", "E5"], ["black", "king", "L12"], NECRO,
-      ["white", "shielder", null, "E6"], ["black", "dragon", "E7"],
-    ]));
-    expect(isInCheck(state, "white")).toBe(true);
-    expect(isInCheck(play(state, resurrect("white-E6")), "white")).toBe(false);
+  it("allows a revived Shielder to survive existing fire without saving the ally behind it", () => {
+    const initial = startPosition(position([
+      ...KINGS, NECRO, ["white", "shielder", null, "E6"],
+      ["white", "pawn", "E5", "E3", { hasMoved: true }], ["black", "dragon", "E7"],
+    ], "black"));
+    const burned = play(initial, {
+      kind: "dragon", pieceId: "black-E7", destination: sq("G8"), fireTiming: "before",
+    });
+    expect(burned.fireState.effects.map((effect) => squareName(effect.square))).toContain("E6");
+    const revived = play(burned, resurrect("white-E6"));
+    expect(pieceAt(revived, sq("E6"))?.type).toBe("shielder");
+    expect(revived.graveyard.white).toEqual(["white-E3"]);
+    expect(remainingResurrections(revived, "white", "shielder")).toBe(0);
+  });
+
+  it("rejects resurrection when fire expiration removes a blocker and exposes its King", () => {
+    const initial = startPosition(position([
+      ...KINGS, NECRO, ["white", "knight", "A3", "B1"], ["white", "pawn", null, "D3"],
+      ["black", "dragon", "A4"], ["black", "rook", "A8"],
+    ], "black"));
+    const burned = play(initial, {
+      kind: "dragon", pieceId: "black-A4", destination: sq("C5"), fireTiming: "before",
+    });
+    expect(isInCheck(burned, "white")).toBe(false);
+    expect(applyAction(burned, resurrect("white-D3"))).toBeNull();
+    expect(remainingResurrections(burned, "white", "pawn")).toBe(3);
+    expect(pieceAt(burned, sq("A3"))?.id).toBe("white-B1");
   });
 });

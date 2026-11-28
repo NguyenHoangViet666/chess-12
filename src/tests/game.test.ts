@@ -114,6 +114,24 @@ describe('game completion', () => {
     expect(positionKey({ ...pinned, enPassant: ep.enPassant })).toBe(positionKey(pinned))
   })
 
+  it('includes consumed quotas, fire ownership and relative fire duration in repetition', () => {
+    const start = cyclePosition()
+    const used = { ...start, resurrectionState: {
+      ...start.resurrectionState, white: { ...start.resurrectionState.white, pawn: 1 },
+    } }
+    expect(positionKey(used)).not.toBe(positionKey(start))
+
+    const fire = { id: 'one', owner: 'black' as const, square: at('E5'), createdAtTurn: 6, expiresAfterTurn: 7 }
+    const burning = { ...start, fireState: { currentTurnIndex: 7, effects: [fire] } }
+    expect(positionKey(burning)).not.toBe(positionKey(start))
+    expect(positionKey({ ...burning, fireState: { currentTurnIndex: 6, effects: [fire] } })).not.toBe(positionKey(burning))
+    expect(positionKey({ ...burning, fireState: { currentTurnIndex: 7, effects: [{ ...fire, owner: 'white' }] } })).not.toBe(positionKey(burning))
+    expect(positionKey({ ...burning, fireState: { currentTurnIndex: 20, effects: [
+      { ...fire, id: 'different', createdAtTurn: 19, expiresAfterTurn: 20 },
+    ] } })).toBe(positionKey(burning))
+  })
+
+
   it('records mutual agreement and can start an entirely fresh match afterwards', () => {
     const original = createGame()
     const state = play(original, move('white-A3', 'A5'))
@@ -126,7 +144,7 @@ describe('game completion', () => {
 })
 
 describe('complete-turn undo', () => {
-  it('restores counters, history, positions, original rook rights, en passant and multiple fire victims at once', () => {
+  it('undoes ignition and expiration separately as complete turns, restoring victims and rook rights', () => {
     const raw = position([
       ['white', 'king', 'A2'], ['black', 'king', 'G12'], ['white', 'dragon', 'K10', 'I1'],
       ['black', 'rook', 'L12'], ['black', 'knight', 'J12'],
@@ -139,15 +157,23 @@ describe('complete-turn undo', () => {
     const start = startPosition(raw)
     const session = createSession(start)
     const action: Action = { kind: 'dragon', pieceId: 'white-I1', destination: at('I9'), fireTiming: 'before' }
-    const next = updateSession(session, play(start, action))
-    expect(next.game.moveHistory[0].capturedIds).toEqual(['black-K10', 'black-J12', 'black-L12'])
-    expect(next.game.graveyard.black).toHaveLength(3)
-    expect(next.game.castlingRights.black.kingSide).toBe(false)
-    expect(next.game.halfMoveClock).toBe(0)
-    expect(next.game.enPassant).toBeNull()
-    expect(next.game.repetitionHistory).toHaveLength(2)
-    expect(undo(next)).toEqual(session)
+    const ignited = updateSession(session, play(start, action))
+    expect(ignited.game.moveHistory[0].capturedIds).toEqual([])
+    expect(ignited.game.halfMoveClock).toBe(22)
+    expect(ignited.game.fireState.effects).toHaveLength(4)
+    expect(ignited.game.castlingRights.black.kingSide).toBe(true)
+    expect(ignited.game.enPassant).toBeNull()
+    const expired = updateSession(ignited, play(ignited.game, move('black-G12', 'G11')))
+    expect(expired.game.moveHistory[1].fire.captures.map(({pieceId}) => pieceId)).toEqual(['black-K10', 'black-J12', 'black-L12'])
+    expect(expired.game.graveyard.black).toHaveLength(3)
+    expect(expired.game.fireState.effects).toEqual([])
+    expect(expired.game.castlingRights.black.kingSide).toBe(false)
+    expect(expired.game.halfMoveClock).toBe(0)
+    expect(expired.game.repetitionHistory).toHaveLength(3)
+    expect(undo(expired)).toEqual(ignited)
+    expect(undo(ignited)).toEqual(session)
   })
+
 
   it('restores a promoted pawn in the graveyard after undoing resurrection', () => {
     const raw = position([
@@ -162,6 +188,7 @@ describe('complete-turn undo', () => {
     }))
     expect(next.game.pieces['white-E3']).toMatchObject({ type: 'pawn', promoted: false, hasMoved: true })
     expect(next.game.halfMoveClock).toBe(0)
+    expect(next.game.resurrectionState.white.pawn).toBe(1)
     expect(undo(next)).toEqual(session)
     expect(undo(session)).toBe(session)
   })

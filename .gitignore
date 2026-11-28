@@ -4,3 +4,4 @@ coverage/
 *.local
 *.tsbuildinfo
 npm-debug.log*
+/selfplay-results/
