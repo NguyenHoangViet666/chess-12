@@ -12,6 +12,8 @@ interface Ink {
   gradStart: string;
   gradMid: string;
   gradEnd: string;
+  wingStart: string;
+  wingEnd: string;
   rim: string;
   detail: string;
   gem: string;
@@ -24,6 +26,8 @@ const palette: Record<Color, Ink> = {
     gradStart: "#fffbf2",
     gradMid: "#f0dbb8",
     gradEnd: "#cfa977",
+    wingStart: "#e7cda3",
+    wingEnd: "#b88c58",
     rim: "#3d1e2c",
     detail: "#9f6234",
     gem: "#e13f60",
@@ -34,6 +38,8 @@ const palette: Record<Color, Ink> = {
     gradStart: "#4c3b58",
     gradMid: "#291e32",
     gradEnd: "#150e1c",
+    wingStart: "#392a45",
+    wingEnd: "#120b18",
     rim: "#f2d2a0",
     detail: "#d79a74",
     gem: "#ff6b8b",
@@ -41,9 +47,10 @@ const palette: Record<Color, Ink> = {
   },
 };
 
-function artwork(ink: Ink, gradId: string, gemGradId: string): Record<PieceType, ReactNode> {
+function artwork(ink: Ink, gradId: string, gemGradId: string, wingGradId: string): Record<PieceType, ReactNode> {
   const fill = `url(#${gradId})`;
   const gemFill = `url(#${gemGradId})`;
+  const wingFill = `url(#${wingGradId})`;
   return {
     king: (
       <>
@@ -106,11 +113,40 @@ function artwork(ink: Ink, gradId: string, gemGradId: string): Record<PieceType,
     ),
     dragon: (
       <>
-        <path d="M11 39c.8-7 5-11 10-14-3 1-8 1-12-2L5 19l5-4 7-.5 3-4-2-6 7 4 5-4 1 7c7 4 10 10 9 17l3 9-5-2 1 5Z" fill={fill} />
-        <path d="M11 39h27l3 4H8Z" fill={fill} />
-        <path d="M23 28c3-1.3 5-1.4 8-.3l-1.5 5 5-2.1m-25-11 7 .2m14-5.5c2 1.9 3.3 4 3.7 6" fill="none" stroke={ink.detail} strokeWidth="1.5" />
-        <path d="m22 15 5 .6-3 2.1Z" fill={ink.eye} strokeWidth="1.1" />
-        <path d="m13 22 2 2 1.5-2" fill="none" strokeWidth="1.1" />
+        {/* 1. Back Layer: Spread 3-Scallop Bat Wing */}
+        <path
+          d="M21.8 25 C25.2 17.5, 32.5 11.5, 39.8 8.8 L41.5 6 L42 10 L45.6 15.5 Q40.8 18.5, 42.5 24.6 Q37.5 27, 37.5 32.5 Q33.5 33.8, 32 37 H22.8 Z"
+          fill={wingFill}
+        />
+        <path
+          d="M40 10 C37 16, 37.2 21, 42 24.2 M38.8 10.8 C34 18, 33 25, 37.2 32"
+          fill="none"
+          stroke={ink.detail}
+          strokeWidth="1.35"
+        />
+
+        {/* 2. Foreground Layer: S-Curved Armored Neck, Wide Roaring Fanged Jaws & Twin Horns */}
+        <path
+          d="M12.2 37 C11 31.2, 13.4 27, 16.2 23.6 L8.2 23.8 L6.8 21.8 L9.5 21.4 L10.5 19.6 L11.8 21.3 L16.5 20.6 V16.2 L11.2 16 L9.8 18.2 L8.8 16 L5.2 15.6 L4.5 12.4 L10.8 10.6 L16 8.8 C19.4 5.4, 24.2 3.8, 29.8 3.6 C26.8 6.8, 24.6 8.8, 22.2 11 L28.8 10.2 C25.6 13, 23 14.6, 20.6 15.8 C22 21, 25.2 27.5, 26.2 37 Z"
+          fill={fill}
+        />
+
+        {/* 3. Frameless Flame Breath Tongue & Fierce Eye */}
+        <path
+          d="M15.8 17.6 C11.2 16.9, 6.8 17.4, 2 18.6 C6.6 20.4, 11 20, 15.8 19.2 Z"
+          fill={gemFill}
+          stroke="none"
+        />
+        <path d="M12.8 12.5 L17.5 11.1 L15.8 13.8 Z" fill={ink.eye} stroke="none" />
+
+        {/* 4. Chest Scales & 2-Tier Royal Pedestal Base */}
+        <path
+          d="M14.4 27.8 Q17.8 28.8, 20 27.4 M13.8 32 Q17.8 33, 20.6 31.6"
+          fill="none"
+          stroke={ink.detail}
+          strokeWidth="1.35"
+        />
+        <path d="M11 37h23.5l2 2.8H9ZM9 39.8h27.5l1.5 3.2H7.5Z" fill={fill} />
       </>
     ),
     shielder: (
@@ -128,6 +164,7 @@ export function PieceGlyph({ type, color, className }: PieceGlyphProps) {
   const uid = useId().replace(/:/g, "");
   const gradId = `pg-${color}-${uid}`;
   const gemGradId = `pgg-${color}-${uid}`;
+  const wingGradId = `pgw-${color}-${uid}`;
   const ink = palette[color];
 
   return (
@@ -156,8 +193,12 @@ export function PieceGlyph({ type, color, className }: PieceGlyphProps) {
           <stop offset="45%" stopColor={ink.gem} />
           <stop offset="100%" stopColor={ink.eye} />
         </linearGradient>
+        <linearGradient id={wingGradId} x1="10%" y1="10%" x2="90%" y2="95%">
+          <stop offset="0%" stopColor={ink.wingStart} />
+          <stop offset="100%" stopColor={ink.wingEnd} />
+        </linearGradient>
       </defs>
-      {artwork(ink, gradId, gemGradId)[type]}
+      {artwork(ink, gradId, gemGradId, wingGradId)[type]}
     </svg>
   );
 }
